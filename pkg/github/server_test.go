@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/github/github-mcp-server/pkg/raw"
 	"github.com/google/go-github/v72/github"
 	"github.com/shurcooL/githubv4"
 	"github.com/stretchr/testify/assert"
@@ -33,6 +34,12 @@ func stubGetClientFnErr(err string) GetClientFn {
 
 func stubGetGQLClientFn(client *githubv4.Client) GetGQLClientFn {
 	return func(_ context.Context) (*githubv4.Client, error) {
+		return client, nil
+	}
+}
+
+func stubGetRawClientFn(client *raw.Client) raw.GetRawClientFn {
+	return func(_ context.Context) (*raw.Client, error) {
 		return client, nil
 	}
 }
@@ -129,7 +136,7 @@ func Test_RequiredStringParam(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			request := createMCPRequest(tc.params)
-			result, err := requiredParam[string](request, tc.paramName)
+			result, err := RequiredParam[string](request, tc.paramName)
 
 			if tc.expectError {
 				assert.Error(t, err)
