@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 
+	"github.com/github/github-mcp-server/pkg/raw"
 	"github.com/github/github-mcp-server/pkg/toolsets"
 	"github.com/github/github-mcp-server/pkg/translations"
 	"github.com/google/go-github/v72/github"
@@ -15,8 +16,7 @@ type GetGQLClientFn func(context.Context) (*githubv4.Client, error)
 
 var DefaultTools = []string{"all"}
 
-func InitToolsets(passedToolsets []string, readOnly bool, getClient GetClientFn, getGQLClient GetGQLClientFn, t translations.TranslationHelperFunc) (*toolsets.ToolsetGroup, error) {
-	// Create a new toolset group
+func DefaultToolsetGroup(readOnly bool, getClient GetClientFn, getGQLClient GetGQLClientFn, getRawClient raw.GetRawClientFn, t translations.TranslationHelperFunc) *toolsets.ToolsetGroup {
 	tsg := toolsets.NewToolsetGroup(readOnly)
 
 	// Define all available features with their default state (disabled)
@@ -24,7 +24,7 @@ func InitToolsets(passedToolsets []string, readOnly bool, getClient GetClientFn,
 	repos := toolsets.NewToolset("repos", "GitHub Repository related tools").
 		AddReadTools(
 			toolsets.NewServerTool(SearchRepositories(getClient, t)),
-			toolsets.NewServerTool(GetFileContents(getClient, t)),
+			toolsets.NewServerTool(GetFileContents(getClient, getRawClient, t)),
 			toolsets.NewServerTool(ListCommits(getClient, t)),
 			toolsets.NewServerTool(SearchCode(getClient, t)),
 			toolsets.NewServerTool(GetCommit(getClient, t)),
@@ -39,6 +39,13 @@ func InitToolsets(passedToolsets []string, readOnly bool, getClient GetClientFn,
 			toolsets.NewServerTool(CreateBranch(getClient, t)),
 			toolsets.NewServerTool(PushFiles(getClient, t)),
 			toolsets.NewServerTool(DeleteFile(getClient, t)),
+		).
+		AddResourceTemplates(
+			toolsets.NewServerResourceTemplate(GetRepositoryResourceContent(getClient, getRawClient, t)),
+			toolsets.NewServerResourceTemplate(GetRepositoryResourceBranchContent(getClient, getRawClient, t)),
+			toolsets.NewServerResourceTemplate(GetRepositoryResourceCommitContent(getClient, getRawClient, t)),
+			toolsets.NewServerResourceTemplate(GetRepositoryResourceTagContent(getClient, getRawClient, t)),
+			toolsets.NewServerResourceTemplate(GetRepositoryResourcePrContent(getClient, getRawClient, t)),
 		)
 	issues := toolsets.NewToolset("issues", "GitHub Issues related tools").
 		AddReadTools(
@@ -104,35 +111,47 @@ func InitToolsets(passedToolsets []string, readOnly bool, getClient GetClientFn,
 			toolsets.NewServerTool(ManageRepositoryNotificationSubscription(getClient, t)),
 		)
 
+	actions := toolsets.NewToolset("actions", "GitHub Actions workflows and CI/CD operations").
+		AddReadTools(
+			toolsets.NewServerTool(ListWorkflows(getClient, t)),
+			toolsets.NewServerTool(ListWorkflowRuns(getClient, t)),
+			toolsets.NewServerTool(GetWorkflowRun(getClient, t)),
+			toolsets.NewServerTool(GetWorkflowRunLogs(getClient, t)),
+			toolsets.NewServerTool(ListWorkflowJobs(getClient, t)),
+			toolsets.NewServerTool(GetJobLogs(getClient, t)),
+			toolsets.NewServerTool(ListWorkflowRunArtifacts(getClient, t)),
+			toolsets.NewServerTool(DownloadWorkflowRunArtifact(getClient, t)),
+			toolsets.NewServerTool(GetWorkflowRunUsage(getClient, t)),
+		).
+		AddWriteTools(
+			toolsets.NewServerTool(RunWorkflow(getClient, t)),
+			toolsets.NewServerTool(RerunWorkflowRun(getClient, t)),
+			toolsets.NewServerTool(RerunFailedJobs(getClient, t)),
+			toolsets.NewServerTool(CancelWorkflowRun(getClient, t)),
+			toolsets.NewServerTool(DeleteWorkflowRunLogs(getClient, t)),
+		)
+
 	// Keep experiments alive so the system doesn't error out when it's always enabled
 	experiments := toolsets.NewToolset("experiments", "Experimental features that are not considered stable yet")
 
-	// Add toolsets to the group
-	tsg.AddToolset(repos)
-	tsg.AddToolset(issues)
-	tsg.AddToolset(users)
-	tsg.AddToolset(pullRequests)
-	tsg.AddToolset(codeSecurity)
-	tsg.AddToolset(secretProtection)
-	tsg.AddToolset(notifications)
-	tsg.AddToolset(experiments)
-	// Enable the requested features
-
-	if err := tsg.EnableToolsets(passedToolsets); err != nil {
-		return nil, err
-	}
-
-	return tsg, nil
-}
-
-func InitContextToolset(getClient GetClientFn, t translations.TranslationHelperFunc) *toolsets.Toolset {
-	// Create a new context toolset
 	contextTools := toolsets.NewToolset("context", "Tools that provide context about the current user and GitHub context you are operating in").
 		AddReadTools(
 			toolsets.NewServerTool(GetMe(getClient, t)),
 		)
-	contextTools.Enabled = true
-	return contextTools
+
+	// Add toolsets to the group
+	tsg.AddToolset(contextTools)
+	tsg.AddToolset(repos)
+	tsg.AddToolset(issues)
+	tsg.AddToolset(users)
+	tsg.AddToolset(pullRequests)
+	tsg.AddToolset(actions)
+	tsg.AddToolset(codeSecurity)
+	tsg.AddToolset(secretProtection)
+	tsg.AddToolset(notifications)
+	tsg.AddToolset(experiments)
+
+	return tsg
 }
 
 // InitDynamicToolset creates a dynamic toolset that can be used to enable other toolsets, and so requires the server and toolset group as arguments
@@ -150,6 +169,7 @@ func InitDynamicToolset(s *server.MCPServer, tsg *toolsets.ToolsetGroup, t trans
 	return dynamicToolSelection
 }
 
-func toBoolPtr(b bool) *bool {
+// ToBoolPtr converts a bool to a *bool pointer.
+func ToBoolPtr(b bool) *bool {
 	return &b
 }

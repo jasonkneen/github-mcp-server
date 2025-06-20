@@ -14,6 +14,7 @@ import (
 
 	"github.com/github/github-mcp-server/pkg/github"
 	mcplog "github.com/github/github-mcp-server/pkg/log"
+	"github.com/github/github-mcp-server/pkg/raw"
 	"github.com/github/github-mcp-server/pkg/translations"
 	gogithub "github.com/google/go-github/v72/github"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -112,27 +113,27 @@ func NewMCPServer(cfg MCPServerConfig) (*server.MCPServer, error) {
 		return gqlClient, nil // closing over client
 	}
 
-	// Create default toolsets
-	toolsets, err := github.InitToolsets(
-		enabledToolsets,
-		cfg.ReadOnly,
-		getClient,
-		getGQLClient,
-		cfg.Translator,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize toolsets: %w", err)
+	getRawClient := func(ctx context.Context) (*raw.Client, error) {
+		client, err := getClient(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get GitHub client: %w", err)
+		}
+		return raw.NewClient(client, apiHost.rawURL), nil // closing over client
 	}
 
-	context := github.InitContextToolset(getClient, cfg.Translator)
-	github.RegisterResources(ghServer, getClient, cfg.Translator)
+	// Create default toolsets
+	tsg := github.DefaultToolsetGroup(cfg.ReadOnly, getClient, getGQLClient, getRawClient, cfg.Translator)
+	err = tsg.EnableToolsets(enabledToolsets)
 
-	// Register the tools with the server
-	toolsets.RegisterTools(ghServer)
-	context.RegisterTools(ghServer)
+	if err != nil {
+		return nil, fmt.Errorf("failed to enable toolsets: %w", err)
+	}
+
+	// Register all mcp functionality with the server
+	tsg.RegisterAll(ghServer)
 
 	if cfg.DynamicToolsets {
-		dynamic := github.InitDynamicToolset(ghServer, toolsets, cfg.Translator)
+		dynamic := github.InitDynamicToolset(ghServer, tsg, cfg.Translator)
 		dynamic.RegisterTools(ghServer)
 	}
 
@@ -245,6 +246,7 @@ type apiHost struct {
 	baseRESTURL *url.URL
 	graphqlURL  *url.URL
 	uploadURL   *url.URL
+	rawURL      *url.URL
 }
 
 func newDotcomHost() (apiHost, error) {
@@ -263,10 +265,16 @@ func newDotcomHost() (apiHost, error) {
 		return apiHost{}, fmt.Errorf("failed to parse dotcom Upload URL: %w", err)
 	}
 
+	rawURL, err := url.Parse("https://raw.githubusercontent.com/")
+	if err != nil {
+		return apiHost{}, fmt.Errorf("failed to parse dotcom Raw URL: %w", err)
+	}
+
 	return apiHost{
 		baseRESTURL: baseRestURL,
 		graphqlURL:  gqlURL,
 		uploadURL:   uploadURL,
+		rawURL:      rawURL,
 	}, nil
 }
 
@@ -296,10 +304,16 @@ func newGHECHost(hostname string) (apiHost, error) {
 		return apiHost{}, fmt.Errorf("failed to parse GHEC Upload URL: %w", err)
 	}
 
+	rawURL, err := url.Parse(fmt.Sprintf("https://raw.%s/", u.Hostname()))
+	if err != nil {
+		return apiHost{}, fmt.Errorf("failed to parse GHEC Raw URL: %w", err)
+	}
+
 	return apiHost{
 		baseRESTURL: restURL,
 		graphqlURL:  gqlURL,
 		uploadURL:   uploadURL,
+		rawURL:      rawURL,
 	}, nil
 }
 
@@ -323,11 +337,16 @@ func newGHESHost(hostname string) (apiHost, error) {
 	if err != nil {
 		return apiHost{}, fmt.Errorf("failed to parse GHES Upload URL: %w", err)
 	}
+	rawURL, err := url.Parse(fmt.Sprintf("%s://%s/raw/", u.Scheme, u.Hostname()))
+	if err != nil {
+		return apiHost{}, fmt.Errorf("failed to parse GHES Raw URL: %w", err)
+	}
 
 	return apiHost{
 		baseRESTURL: restURL,
 		graphqlURL:  gqlURL,
 		uploadURL:   uploadURL,
+		rawURL:      rawURL,
 	}, nil
 }
 
